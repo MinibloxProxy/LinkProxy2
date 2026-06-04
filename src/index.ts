@@ -10,7 +10,7 @@ import {
 	CPacketPong,
 	CPacketSpawnPlayer,
 	CPacketTimeUpdate,
-	PBVector3,
+	type SPacketMessage,
 	type SPacketPlayerInput,
 } from "../gen/protocol2_pb.js";
 import Client from "./client.js";
@@ -36,11 +36,11 @@ io.attach(httpsServer, {
 });
 
 const SPAWN_POS = new Vector3(0, 70, 0);
-const TOLERANCE = 0.03;
+const TOLERANCE = 1;
 
 io.on("connection", (socket: Socket) => {
 	const cl = new Client(socket);
-	const player = new Player(cl, SPAWN_POS);
+	const player = new Player(cl, "Player", "creative", SPAWN_POS);
 
 	cl.on("data", (d) => {
 		//@ts-expect-error: should probably cat.
@@ -56,26 +56,79 @@ io.on("connection", (socket: Socket) => {
 					console.log(
 						"[Socket] Login started by client. Sending JoinGame packet...",
 					);
-					const clientVersion = payload?.clientVersion || "3.41.74";
+					const clientVersion = payload?.clientVersion ?? "3.41.74";
 					cl.send(
 						new CPacketJoinGame({
 							canConnect: true,
-							gamemode: "creative",
-							name: "Player",
 							tick: 0,
-							dimension: 0,
+							gamemode: player.gamemode,
+							name: player.name,
 							enablePlayerCollision: true,
+							cosmetics: {
+								skin: "bob",
+								cape: "none",
+								hat: "",
+							},
+							rank: "",
 							serverInfo: {
 								serverId: "local-1-1",
 								serverName: "Local Server",
 								serverVersion: clientVersion,
-								serverCategory: "survival",
+								serverCategory: "planets",
 								accessControl: "public",
-								startTime: 0n,
-								worldType: "flat",
-								pvpEnabled: false,
-								cheats: "all",
+								worldType: "VOID",
+								doDaylightCycle: true,
+								inviteCode: "LOCAL0",
+								cheats: "admin-enabled",
+								pvpEnabled: true,
+								startTime: BigInt(Date.now()),
+								playerPermissionEntries: [
+									{
+										uuid: player.uuid,
+										username: player.name,
+										permissionLevel: 200,
+										rank: "",
+										level: 3,
+										verified: true,
+									},
+								],
+								metadata: "{}",
+								commandBlocksEnabled: true,
 							},
+							uuid: player.uuid,
+							dimension: 0,
+						}),
+					);
+					cl.send(
+						new CPacketPlayerPosLook({
+							x: SPAWN_POS.x,
+							y: SPAWN_POS.y,
+							z: SPAWN_POS.z,
+							yaw: 0,
+							pitch: 0,
+						}),
+					);
+					cl.send(
+						new CPacketSpawnPlayer({
+							id: 0,
+							name: player.name,
+							gamemode: player.gamemode,
+							operator: true,
+							pos: {
+								x: SPAWN_POS.x,
+								y: SPAWN_POS.y,
+								z: SPAWN_POS.z,
+							},
+							yaw: 0,
+							pitch: 0,
+							rank: "",
+							cosmetics: {
+								skin: "bob",
+								cape: "none",
+								hat: "",
+							},
+							//@ts-expect-error: How else am I supposed to get the socket ID?
+							socketId: socket.id,
 						}),
 					);
 
@@ -93,18 +146,6 @@ io.on("connection", (socket: Socket) => {
 						new CPacketTimeUpdate({
 							totalTime: 6000,
 							worldTime: 6000,
-						}),
-					);
-
-					// Spawn the player at (0, 70, 0)
-					console.log("[Socket] Sending player spawn position...");
-					cl.send(
-						new CPacketPlayerPosLook({
-							x: SPAWN_POS.x,
-							y: SPAWN_POS.y,
-							z: SPAWN_POS.z,
-							yaw: 0,
-							pitch: 0,
 						}),
 					);
 					return;
@@ -173,20 +214,38 @@ io.on("connection", (socket: Socket) => {
 				case "SPacketPlaceBlock":
 					break;
 				case "SPacketAdminAction":
+					break;
 				case "SPacketClickWindow":
+					break;
 				case "SPacketCloseWindow":
+					break;
 				case "SPacketConfirmTransaction":
+					break;
 				case "SPacketEnchantItem":
+					break;
 				case "SPacketHeldItemChange":
-				case "SPacketMessage":
+					break;
+				case "SPacketMessage": {
+					const pl = payload as SPacketMessage;
+					cl.send(new CPacketMessage({ text: `<${player.name}> ${pl.text}` }));
+					break;
+				}
 				case "SPacketOpenShop":
+					break;
 				case "SPacketPlayerAbilities":
+					break;
 				case "SPacketPlayerAction":
+					break;
 				case "SPacketRespawn":
+					break;
 				case "SPacketTabComplete":
+					break;
 				case "SPacketUpdateSign":
+					break;
 				case "SPacketUseEntity":
+					break;
 				case "SPacketUpdateCommandBlock":
+					break;
 				case "SPacketQueueNext":
 					break;
 				case "SPacketBreakBlock":

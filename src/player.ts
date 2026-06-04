@@ -10,7 +10,10 @@ export default class Player {
 	physics: PhysicsPlayer;
 	constructor(
 		public client: Client,
+		public name: string,
+		public gamemode: string,
 		pos: Vector3,
+		public uuid: string = crypto.randomUUID(),
 	) {
 		this.physics = new PhysicsPlayer(world, pos);
 	}

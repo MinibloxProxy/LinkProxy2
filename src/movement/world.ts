@@ -1,18 +1,15 @@
 import { Box3, Vector3 } from "three";
 import BlockPos from "./BlockPos.js";
-import type { PhysicsPlayer, PhysicsWorld } from "./move.js";
-import type { BlockState } from "./blockstate.js";
 import type Block from "./block.js";
 import Blocks from "./blocks.js";
+import type { BlockState } from "./blockstate.js";
+import type { PhysicsPlayer, PhysicsWorld } from "./move.js";
 
 const CHUNK_SIZE = 16;
 const WORLD_HEIGHT = 256;
 
 function getBlockAABB(x: number, y: number, z: number): Box3 {
-	return new Box3(
-		new Vector3(x, y, z),
-		new Vector3(x + 1, y + 1, z + 1),
-	);
+	return new Box3(new Vector3(x, y, z), new Vector3(x + 1, y + 1, z + 1));
 }
 
 function getChunkKey(cx: number, cz: number): string {
@@ -78,7 +75,10 @@ export class World implements PhysicsWorld {
 		const lx = ((x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
 		const lz = ((z % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
 		const chunk = this.ensureChunkExists(cx, cz);
-		const idx = Math.floor(y) * CHUNK_SIZE * CHUNK_SIZE + Math.floor(lz) * CHUNK_SIZE + Math.floor(lx);
+		const idx =
+			Math.floor(y) * CHUNK_SIZE * CHUNK_SIZE +
+			Math.floor(lz) * CHUNK_SIZE +
+			Math.floor(lx);
 		return chunk[idx] ?? 0;
 	}
 

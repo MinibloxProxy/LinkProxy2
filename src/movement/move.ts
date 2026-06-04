@@ -496,16 +496,6 @@ export class PhysicsPlayer {
 		// }
 		if (posVec.y !== x.y) {
 			T.onLanded(this.world, this);
-			console.log(
-				"ground",
-				this.onGround,
-				"motionY",
-				this.motion.y,
-				"gY",
-				posVec.y,
-				"xY",
-				x.y,
-			);
 		}
 		if (this.canTriggerWalking() && !S && this.ridingEntity == null) {
 			const A = this.pos.clone().sub(pvClone);
@@ -655,16 +645,6 @@ export class PhysicsPlayer {
 		this.moveStrafe *= 0.98;
 		this.moveForward *= 0.98;
 
-		console.log([
-			this.pos.toArray(),
-			this.motion.toArray(),
-			this.onGround,
-			this.moveForward,
-			this.moveStrafe,
-			this.yaw,
-			this.getAIMoveSpeed(),
-			this.getJumpMovementFactor(),
-		]);
 		this.moveEntityWithHeading(this.moveStrafe, this.moveForward);
 	}
 }
