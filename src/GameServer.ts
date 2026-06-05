@@ -14,7 +14,6 @@ import {
 	CPacketTimeUpdate,
 	PBCosmetics,
 	PBFloatVector3,
-	PBModifier,
 	PBSnapshot,
 	PlayerData,
 	SPacketEntityAction,
