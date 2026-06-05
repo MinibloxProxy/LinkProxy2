@@ -102,7 +102,8 @@ export default class GameServer {
 					return;
 				}
 				const pl = payload as SPacketPlayerAbilities;
-				if (pl.isFlying) player.physics.abilities.isFlying = pl.isFlying;
+				if (pl.isFlying !== undefined)
+					player.physics.abilities.isFlying = pl.isFlying;
 				break;
 			}
 			case "SPacketClick":
