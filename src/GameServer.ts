@@ -107,7 +107,11 @@ export default class GameServer {
 		const name = ID_TO_NAME[id] as keyof typeof SPACKET_MAP | undefined;
 		if (!name) return;
 
-		if (name !== "SPacketPlayerInput" && name !== "SPacketPlayerPosLook" && name !== "SPacketPing") {
+		if (
+			name !== "SPacketPlayerInput" &&
+			name !== "SPacketPlayerPosLook" &&
+			name !== "SPacketPing"
+		) {
 			console.log(`[Server] Packet received: ${name}`, JSON.stringify(payload));
 		}
 
@@ -132,7 +136,7 @@ export default class GameServer {
 				const pl = payload as SPacketPlayerAbilities;
 				if (player.gamemode !== "creative" && pl.isFlying) {
 					cl.disconnect(
-						"Sent player abilities packet with isFlying while not in creative mode"
+						"Sent player abilities packet with isFlying while not in creative mode",
 					);
 					player.physics.abilities.isFlying = false;
 					return;
@@ -147,8 +151,8 @@ export default class GameServer {
 				if (!player) return;
 				const pl = payload as SPacketEntityAction;
 				if (pl.id !== player.entityId) {
-					console.warn(
-						`[Server] SPacketEntityAction ID mismatch: client sent ${pl.id}, server expects ${player.entityId}. (Non-fatal warning, bypass kick)`
+					cl.disconnect(
+						"An entities ID was sent in SPacketEntityAction the that wasn't yours",
 					);
 				}
 				return;
@@ -337,13 +341,15 @@ export default class GameServer {
 			payload.sequenceNumber <= checkData.lastSequenceNumber
 		) {
 			console.warn(
-				`[Server] Sequence number went backwards or duplicated (client: ${payload.sequenceNumber}, server: ${checkData.lastSequenceNumber}). Resetting tracking.`
+				`[Server] Sequence number went backwards or duplicated (client: ${payload.sequenceNumber}, server: ${checkData.lastSequenceNumber}). Resetting tracking.`,
 			);
 		}
 		checkData.lastSequenceNumber = payload.sequenceNumber;
 		checkData.hadInput = true;
 		if (!checkData.hadPos && checkData.inputOrderExempt <= 0) {
-			console.warn(`[Server] Missing pos look before input packet for player ${player.name}. (Bypassing kick)`);
+			console.warn(
+				`[Server] Missing pos look before input packet for player ${player.name}. (Bypassing kick)`,
+			);
 		}
 		player.checkData.lastClientPos = new Vector3(
 			payload.pos.x,
@@ -394,7 +400,7 @@ export default class GameServer {
 			const dist = clientPos.distanceTo(checkData.teleportTarget);
 			if (dist > 0.1) {
 				console.warn(
-					`[Server] Teleport check failed: client sent pos (${clientPos.x}, ${clientPos.y}, ${clientPos.z}) but target was (${checkData.teleportTarget.x}, ${checkData.teleportTarget.y}, ${checkData.teleportTarget.z}) (dist: ${dist}). Resetting position.`
+					`[Server] Teleport check failed: client sent pos (${clientPos.x}, ${clientPos.y}, ${clientPos.z}) but target was (${checkData.teleportTarget.x}, ${checkData.teleportTarget.y}, ${checkData.teleportTarget.z}) (dist: ${dist}). Resetting position.`,
 				);
 				reset = true;
 				pl.pos.x = checkData.teleportTarget.x;
@@ -434,10 +440,7 @@ export default class GameServer {
 			checkData.predictedNextPos = nextPos.clone();
 		}
 
-		if (
-			pl.sprint !== undefined &&
-			pl.sprint !== checkData.prevSprinting
-		) {
+		if (pl.sprint !== undefined && pl.sprint !== checkData.prevSprinting) {
 			checkData.prevSprinting = pl.sprint;
 			cl.send(
 				new CPacketEntityProperties({
@@ -489,7 +492,8 @@ export default class GameServer {
 		const finalPos = nextPos ?? checkData.lastAuthoritativePos;
 		let encodedYaw = Math.floor(((pl.yaw ?? 0) / (Math.PI * 2)) * 256) % 256;
 		if (encodedYaw < 0) encodedYaw += 256;
-		let encodedPitch = Math.floor(((pl.pitch ?? 0) / (Math.PI * 2)) * 256) % 256;
+		let encodedPitch =
+			Math.floor(((pl.pitch ?? 0) / (Math.PI * 2)) * 256) % 256;
 		if (encodedPitch < 0) encodedPitch += 256;
 
 		const movePacket = new CPacketEntityPositionAndRotation({
@@ -523,7 +527,9 @@ export default class GameServer {
 			checkData.inputOrderExempt--;
 		}
 		if (!checkData.hadInput && checkData.inputOrderExempt <= 0) {
-			console.warn(`[Server] Missing input packet before pos look packet for player ${player.name}. (Bypassing kick)`);
+			console.warn(
+				`[Server] Missing input packet before pos look packet for player ${player.name}. (Bypassing kick)`,
+			);
 		}
 		checkData.hadPos = true;
 		checkData.hadInput = false;
@@ -557,28 +563,84 @@ export default class GameServer {
 		const by = (posIn.y ?? 0) + off[1];
 		const bz = (posIn.z ?? 0) + off[2];
 
+		function cancel(reason?: string) {
+			if (player === undefined) return;
+			player.client.send(
+				new CPacketMessage({
+					text: `Cancel block placement: ${reason}`,
+				}),
+			);
+			const air = new CPacketBlockUpdate({ id: 0, x: bx, y: by, z: bz });
+			player.client.send(air);
+		}
+		if (!side) return;
+		// #region Validations
+		/*
+		const trace = playerBlockRayTrace(
+			{
+				getEyePos() {
+					const lcp = player.checkData.lastClientPos.clone();
+					return lcp.setY(lcp.y + player.physics.eyeHeight);
+				},
+				getLook() {
+					const pitch = Math.cos(player.rotation.pitch),
+						x = -Math.sin(player.rotation.yaw) * pitch,
+						y = Math.sin(player.rotation.pitch),
+						z = -Math.cos(player.rotation.yaw) * pitch;
+					return new Vector3(x, y, z).normalize();
+				},
+			},
+			this.world,
+			4.5,
+		);
+		if (trace === null) return cancel("trace === null");
+		if (side === null) return cancel("side === null");
+		const realSide =
+			opposite[fromProtoString(side as unknown as DirectionString)];
+		if (trace.block) {
+			console.log("hitVec = ", trace.hitVec.toArray(), [
+				payload.hitX,
+				payload.hitY,
+				payload.hitZ,
+			]);
+		}
+		if (
+			trace.block?.x !== posIn.x ||
+			trace.block?.y !== posIn.y ||
+			trace.block?.z !== posIn.z
+		)
+			return cancel("traced block pos and normal block pos don't match");
+		if (trace.side !== realSide) return cancel("traced side !== client side");
+		/*if (
+			trace.hitVec.x !== payload.hitX ||
+			trace.hitVec.y !== payload.hitY ||
+			trace.hitVec.z !== payload.hitZ
+		)
+			return cancel("wrong hit vec");*/
+		// #endregion
 		// Check if the block intersects with any connected player
 		const blockBox = new Box3(
 			new Vector3(bx, by, bz),
-			new Vector3(bx + 1, by + 1, bz + 1)
+			new Vector3(bx + 1, by + 1, bz + 1),
 		);
 		let intersects = false;
-    const bb = p.physics.boundingBox;
 		for (const p of this.players.values()) {
-			if (blockBox.intersectsBox(bb)) {
+			if (blockBox.intersectsBox(p.physics.boundingBox)) {
 				intersects = true;
 				break;
 			}
 		}
 
 		if (intersects) {
-      return cancel("block intersecting with a player");
+			return cancel("block intersecting with a player");
 		}
 
 		// Get block ID from selected hotbar slot item
 		const heldItem = player.inventory.items[player.heldSlot];
-		console.log(`[Server] handlePlace: heldSlot=${player.heldSlot}, heldItem=${JSON.stringify(heldItem)}, totalItems=${player.inventory.items.length}`);
-		const blockId = (heldItem && heldItem.present && heldItem.id !== undefined) ? heldItem.id : 1;
+		const blockId =
+			heldItem && heldItem.present && heldItem.id !== undefined
+				? heldItem.id
+				: 1;
 
 		player.physics.world.setBlock(bx, by, bz, blockId);
 		const update = new CPacketBlockUpdate({ id: blockId, x: bx, y: by, z: bz });
@@ -610,7 +672,9 @@ export default class GameServer {
 	private handleUpdateInventory(socket: Socket, payload: unknown): void {
 		const player = this.getPlayer(socket);
 		if (!player) return;
-		console.log(`[Server] handleUpdateInventory: player=${player.name}, payload=${JSON.stringify(payload)}`);
+		console.log(
+			`[Server] handleUpdateInventory: player=${player.name}, payload=${JSON.stringify(payload)}`,
+		);
 		const pkt = payload as SPacketUpdateInventory;
 		if (pkt.main) {
 			player.inventory.items = pkt.main;
@@ -620,14 +684,23 @@ export default class GameServer {
 	private handleClickWindow(socket: Socket, payload: unknown): void {
 		const player = this.getPlayer(socket);
 		if (!player) return;
-		console.log(`[Server] handleClickWindow: player=${player.name}, payload=${JSON.stringify(payload)}`);
+		console.log(
+			`[Server] handleClickWindow: player=${player.name}, payload=${JSON.stringify(payload)}`,
+		);
 		const pkt = payload as SPacketClickWindow;
 		const slotId = pkt.slotId;
-		if (pkt.windowId === 0 && slotId !== undefined && slotId >= 4 && slotId < 40) {
+		if (
+			pkt.windowId === 0 &&
+			slotId !== undefined &&
+			slotId >= 4 &&
+			slotId < 40
+		) {
 			const invSlot = slotId - 4;
 			if (pkt.itemStack) {
 				player.inventory.items[invSlot] = pkt.itemStack;
-				console.log(`[Server] handleClickWindow: updated slot ${invSlot} to item=${JSON.stringify(pkt.itemStack)}`);
+				console.log(
+					`[Server] handleClickWindow: updated slot ${invSlot} to item=${JSON.stringify(pkt.itemStack)}`,
+				);
 			}
 		}
 	}
@@ -703,13 +776,13 @@ export default class GameServer {
 					player.client.send(
 						new CPacketMessage({
 							text: `\\green\\Gamemode set to ${mode}\\reset\\`,
-						})
+						}),
 					);
 				} else {
 					player.client.send(
 						new CPacketMessage({
 							text: `\\red\\Usage: /gamemode <survival|creative>\\reset\\`,
-						})
+						}),
 					);
 				}
 			} else if (command === "tp" || command === "teleport") {
@@ -722,46 +795,82 @@ export default class GameServer {
 						player.checkData.lastAuthoritativePos.set(x, y, z);
 						this.resetSequenceAndPosition(player);
 						player.checkData.teleportTarget = player.physics.pos.clone();
-						player.client.send(new CPacketPlayerPosLook({ x, y, z, yaw: 0, pitch: 0 }));
-						player.client.send(new CPacketMessage({ text: `\\green\\Teleported to ${x}, ${y}, ${z}\\reset\\` }));
+						player.client.send(
+							new CPacketPlayerPosLook({ x, y, z, yaw: 0, pitch: 0 }),
+						);
+						player.client.send(
+							new CPacketMessage({
+								text: `\\green\\Teleported to ${x}, ${y}, ${z}\\reset\\`,
+							}),
+						);
 					} else {
-						player.client.send(new CPacketMessage({ text: `\\red\\Invalid coordinates!\\reset\\` }));
+						player.client.send(
+							new CPacketMessage({
+								text: `\\red\\Invalid coordinates!\\reset\\`,
+							}),
+						);
 					}
 				} else if (args.length === 1) {
 					const targetName = (args[0] || "").toLowerCase();
-					const target = [...this.players.values()].find(p => p.name.toLowerCase() === targetName);
+					const target = [...this.players.values()].find(
+						(p) => p.name.toLowerCase() === targetName,
+					);
 					if (target) {
 						const pos = target.physics.pos;
 						player.physics.pos.copy(pos);
 						player.checkData.lastAuthoritativePos.copy(pos);
 						this.resetSequenceAndPosition(player);
 						player.checkData.teleportTarget = player.physics.pos.clone();
-						player.client.send(new CPacketPlayerPosLook({ x: pos.x, y: pos.y, z: pos.z, yaw: 0, pitch: 0 }));
-						player.client.send(new CPacketMessage({ text: `\\green\\Teleported to ${target.name}\\reset\\` }));
+						player.client.send(
+							new CPacketPlayerPosLook({
+								x: pos.x,
+								y: pos.y,
+								z: pos.z,
+								yaw: 0,
+								pitch: 0,
+							}),
+						);
+						player.client.send(
+							new CPacketMessage({
+								text: `\\green\\Teleported to ${target.name}\\reset\\`,
+							}),
+						);
 					} else {
-						player.client.send(new CPacketMessage({ text: `\\red\\Player not found: ${args[0] || ""}\\reset\\` }));
+						player.client.send(
+							new CPacketMessage({
+								text: `\\red\\Player not found: ${args[0] || ""}\\reset\\`,
+							}),
+						);
 					}
 				} else {
-					player.client.send(new CPacketMessage({ text: `\\red\\Usage: /tp <x> <y> <z> OR /tp <player>\\reset\\` }));
+					player.client.send(
+						new CPacketMessage({
+							text: `\\red\\Usage: /tp <x> <y> <z> OR /tp <player>\\reset\\`,
+						}),
+					);
 				}
 			} else if (command === "spawn") {
 				player.physics.pos.set(0, 70, 0);
 				player.checkData.lastAuthoritativePos.set(0, 70, 0);
 				this.resetSequenceAndPosition(player);
 				player.checkData.teleportTarget = player.physics.pos.clone();
-				player.client.send(new CPacketPlayerPosLook({ x: 0, y: 70, z: 0, yaw: 0, pitch: 0 }));
-				player.client.send(new CPacketMessage({ text: `\\green\\Teleported to spawn\\reset\\` }));
+				player.client.send(
+					new CPacketPlayerPosLook({ x: 0, y: 70, z: 0, yaw: 0, pitch: 0 }),
+				);
+				player.client.send(
+					new CPacketMessage({ text: `\\green\\Teleported to spawn\\reset\\` }),
+				);
 			} else if (command === "help" || command === "?") {
 				player.client.send(
 					new CPacketMessage({
 						text: `\\yellow\\Available commands:\\reset\\\n\\gray\\- /gamemode [survival|creative] (or /gm s|c)\\reset\\\n\\gray\\- /tp <x> <y> <z> OR /tp <player>\\reset\\\n\\gray\\- /spawn\\reset\\\n\\gray\\- /help\\reset\\`,
-					})
+					}),
 				);
 			} else {
 				player.client.send(
 					new CPacketMessage({
 						text: `\\red\\Unknown command: /${command}\\reset\\`,
-					})
+					}),
 				);
 			}
 			return;
@@ -778,26 +887,36 @@ export default class GameServer {
 		if (!attacker) return;
 
 		const pkt = payload as SPacketUseEntity;
-		console.log(`[Server] handleUseEntity called by ${attacker.name}: action=${pkt.action}, targetId=${pkt.id}`);
+		console.log(
+			`[Server] handleUseEntity called by ${attacker.name}: action=${pkt.action}, targetId=${pkt.id}`,
+		);
 
 		const action = pkt.action as unknown;
 		if (action !== SPacketUseEntity_Action.ATTACK && action !== "ATTACK") {
-			console.log(`[Server] handleUseEntity: Ignored because action is not ATTACK (action: ${pkt.action})`);
+			console.log(
+				`[Server] handleUseEntity: Ignored because action is not ATTACK (action: ${pkt.action})`,
+			);
 			return;
 		}
 		if (pkt.id === undefined) {
-			console.log(`[Server] handleUseEntity: Ignored because target ID is undefined`);
+			console.log(
+				`[Server] handleUseEntity: Ignored because target ID is undefined`,
+			);
 			return;
 		}
 
 		// Find the target player
-		const target = [...this.players.values()].find((p) => p.entityId === pkt.id);
+		const target = [...this.players.values()].find(
+			(p) => p.entityId === pkt.id,
+		);
 		if (!target) return;
 
 		// 1. Distance check (max 4.5 blocks range)
 		const dist = attacker.physics.pos.distanceTo(target.physics.pos);
 		if (dist > 4.5) {
-			console.log(`[Server] Combat: Attack rejected from ${attacker.name} to ${target.name} due to distance (${dist.toFixed(2)} blocks)`);
+			console.log(
+				`[Server] Combat: Attack rejected from ${attacker.name} to ${target.name} due to distance (${dist.toFixed(2)} blocks)`,
+			);
 			return;
 		}
 
@@ -807,7 +926,10 @@ export default class GameServer {
 		}
 
 		// 3. Determine if critical hit (falling, not on ground, not flying)
-		const isCrit = !attacker.physics.onGround && attacker.physics.motion.y < 0 && !attacker.physics.abilities.isFlying;
+		const isCrit =
+			!attacker.physics.onGround &&
+			attacker.physics.motion.y < 0 &&
+			!attacker.physics.abilities.isFlying;
 
 		// 4. Calculate damage
 		let damage = 2; // 1 heart
@@ -819,7 +941,9 @@ export default class GameServer {
 		target.health = Math.max(0, target.health - damage);
 		target.physics.health = target.health;
 
-		console.log(`[Server] Combat: ${attacker.name} attacked ${target.name} for ${damage} HP (Crit: ${isCrit}). Target Health: ${target.health}/20`);
+		console.log(
+			`[Server] Combat: ${attacker.name} attacked ${target.name} for ${damage} HP (Crit: ${isCrit}). Target Health: ${target.health}/20`,
+		);
 
 		// Sync health to the target client
 		target.client.send(
@@ -829,7 +953,7 @@ export default class GameServer {
 				food: 20,
 				foodSaturation: 5,
 				oxygen: 20,
-			})
+			}),
 		);
 
 		// Broadcast hurt state to everyone if player survived (hurt status 2 + hurt animation type 1)
@@ -861,7 +985,10 @@ export default class GameServer {
 		}
 
 		// 5. Apply knockback velocity
-		const kbDir = new Vector3().subVectors(target.physics.pos, attacker.physics.pos);
+		const kbDir = new Vector3().subVectors(
+			target.physics.pos,
+			attacker.physics.pos,
+		);
 		kbDir.y = 0;
 		if (kbDir.lengthSq() > 0) {
 			kbDir.normalize();
@@ -880,7 +1007,7 @@ export default class GameServer {
 		const knockbackVelocity = new Vector3(
 			kbDir.x * kbHorizontal,
 			kbVertical,
-			kbDir.z * kbHorizontal
+			kbDir.z * kbHorizontal,
 		);
 
 		// Apply velocity to server-side physics
@@ -899,12 +1026,14 @@ export default class GameServer {
 					y: knockbackVelocity.y,
 					z: knockbackVelocity.z,
 				}),
-			})
+			}),
 		);
 
 		// 6. Death Handling
 		if (target.health <= 0) {
-			console.log(`[Server] Death: ${target.name} was slain by ${attacker.name}`);
+			console.log(
+				`[Server] Death: ${target.name} was slain by ${attacker.name}`,
+			);
 
 			// Broadcast death message
 			const deathMsg = new CPacketMessage({
@@ -921,7 +1050,7 @@ export default class GameServer {
 					sound: "game.neutral.die",
 					volume: 1.0,
 					pitch: (Math.random() - Math.random()) * 0.2 + 1.0,
-				})
+				}),
 			);
 
 			// Broadcast death state (status 3 = dead) to all other players
@@ -959,7 +1088,7 @@ export default class GameServer {
 				notDeath: true,
 				client: false,
 				dimension: 0,
-			})
+			}),
 		);
 
 		// Position player at spawn and sync health
@@ -970,7 +1099,7 @@ export default class GameServer {
 				z: 0,
 				yaw: 0,
 				pitch: 0,
-			})
+			}),
 		);
 
 		player.client.send(
@@ -980,12 +1109,15 @@ export default class GameServer {
 				food: 20,
 				foodSaturation: 5,
 				oxygen: 20,
-			})
+			}),
 		);
 
 		// Broadcast destroy & spawn sequence to all other clients to refresh player mesh cleanly
 		const destroyPkt = new CPacketDestroyEntities({ ids: [player.entityId] });
-		const spawnPkt = this.spawnPacket(player, this.getSid(player.client.socket));
+		const spawnPkt = this.spawnPacket(
+			player,
+			this.getSid(player.client.socket),
+		);
 
 		for (const p of this.players.values()) {
 			if (p !== player) {
