@@ -106,7 +106,6 @@ export class PhysicsPlayer {
 	moveStrafe = 0;
 
 	sprinting = false;
-	sneaking = false;
 	jumping = false;
 
 	onGround = false;
@@ -153,6 +152,19 @@ export class PhysicsPlayer {
 			new Vector3(pos.x - 0.3, pos.y, pos.z - 0.3),
 			new Vector3(pos.x + 0.3, pos.y + 1.8, pos.z + 0.3),
 		);
+	}
+
+	sleeping = false;
+
+	isPlayerSleeping() {
+		return this.sleeping;
+	}
+
+	get eyeHeight() {
+		let eyeHeight = 1.62;
+		if (this.isPlayerSleeping()) eyeHeight = 0.2;
+		if (this.sneak) eyeHeight -= 0.8;
+		return eyeHeight;
 	}
 
 	isSprinting(): boolean {
@@ -638,7 +650,7 @@ export class PhysicsPlayer {
 				this.motion.y = -0.15;
 			}
 
-			if (this.sneaking && this.motion.y < 0) {
+			if (this.sneak && this.motion.y < 0) {
 				this.motion.y = 0;
 			}
 		}

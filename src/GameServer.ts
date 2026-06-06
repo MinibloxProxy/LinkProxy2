@@ -5,6 +5,7 @@ import {
 	CPacketDestroyEntities,
 	CPacketEntityPositionAndRotation,
 	CPacketEntityProperties,
+	CPacketEntityRelativePositionAndRotation,
 	CPacketJoinGame,
 	CPacketMessage,
 	CPacketPlayerList,
@@ -16,12 +17,13 @@ import {
 	CPacketUpdateStatus,
 	PBCosmetics,
 	PBFloatVector3,
-	PBModifier,
 	PBSnapshot,
 	PBVector3,
 	PlayerData,
+	SPacketBreakBlock,
 	SPacketEntityAction,
 	SPacketHeldItemChange,
+	SPacketLoginStart,
 	SPacketPlaceBlock,
 	SPacketPlayerAbilities,
 	SPacketPlayerPosLook,
@@ -46,6 +48,16 @@ import { ID_TO_NAME, type SPACKET_MAP } from "./protocol/index.js";
 import { createFlatChunk } from "./terrain.js";
 import { simulate } from "./movement/index.js";
 import { PhysicsPlayer } from "./movement/move.js";
+import Rotation from "./rotation.js";
+import {
+	DirectionString,
+	EnumFacing,
+	fromProto,
+	fromProtoString,
+	opposite,
+	playerBlockRayTrace,
+} from "./movement/raytrace.js";
+import { World } from "./movement/world.js";
 
 const FACE_OFFSET: Record<string, [number, number, number]> = {
 	DOWN: [0, 1, 0],
@@ -58,6 +70,8 @@ const FACE_OFFSET: Record<string, [number, number, number]> = {
 
 export default class GameServer {
 	private players = new Map<string, Player>();
+	// note: Miniblox has 2 dimensions (overworld and nether), I'm ignoring the nether since... Why? Whatever.
+	private world = new World();
 	private nextEntityId = 0;
 
 	addClient(socket: Socket): void {
@@ -99,7 +113,7 @@ export default class GameServer {
 
 		switch (name) {
 			case "SPacketLoginStart":
-				return this.handleLogin(cl, socket, payload);
+				return this.handleLogin(cl, payload);
 			case "SPacketRequestChunk":
 				return this.handleChunk(cl, payload);
 			case "SPacketPing":
@@ -116,9 +130,9 @@ export default class GameServer {
 				const player = this.getPlayer(socket);
 				if (!player) return;
 				const pl = payload as SPacketPlayerAbilities;
-				if (player.gamemode !== "creative") {
-					console.warn(
-						`[Server] Player ${player.name} sent abilities packet (isFlying=${pl.isFlying}) while in ${player.gamemode} mode. Ignoring.`
+				if (player.gamemode !== "creative" && pl.isFlying) {
+					cl.disconnect(
+						"Sent player abilities packet with isFlying while not in creative mode"
 					);
 					player.physics.abilities.isFlying = false;
 					return;
@@ -174,21 +188,23 @@ export default class GameServer {
 			(d as Record<string, unknown>).t === 0 &&
 			(d as Record<string, unknown>).d === null
 		) {
-			cl.send({ sid: this.getSid(socket), pid: null }, { packetType: 0 });
+			cl.send({ sid: cl.id, pid: null }, { packetType: 0 });
 			return true;
 		}
 		return false;
 	}
 
-	private handleLogin(cl: Client, socket: Socket, _payload: unknown): void {
+	private handleLogin(cl: Client, _payload: SPacketLoginStart): void {
 		const eid = this.nextEntityId++;
 		const player = new Player(
 			cl,
 			`Player${eid}`,
 			"creative",
-			new Vector3(0, 70, 0),
+			new Vector3(0, 66, 0),
+			new Rotation(),
+			this.world,
 		);
-		this.players.set(this.getSid(socket), player);
+		this.players.set(player.socketId, player);
 
 		console.log(`[Server] ${player.name} joined (eid=${player.entityId})`);
 
@@ -217,16 +233,17 @@ export default class GameServer {
 					cheats: "admin-enabled",
 					pvpEnabled: true,
 					startTime: BigInt(Date.now()),
-					playerPermissionEntries: [
-						{
+					playerPermissionEntries: this.players
+						.values()
+						.map((player) => ({
 							uuid: player.uuid,
 							username: player.name,
 							permissionLevel: player.permissionLevel,
 							rank: "",
 							level: 3,
 							verified: true,
-						},
-					],
+						}))
+						.toArray(),
 					metadata: "{}",
 					commandBlocksEnabled: true,
 				},
@@ -240,7 +257,7 @@ export default class GameServer {
 
 		cl.send(new CPacketTimeUpdate({ totalTime: 6000, worldTime: 6000 }));
 
-		const sid = this.getSid(socket);
+		const sid = cl.id;
 
 		for (const [existingSid, existing] of this.players) {
 			cl.send(this.spawnPacket(existing, existingSid));
@@ -253,7 +270,7 @@ export default class GameServer {
 
 		this.broadcastPlayerList();
 
-		cl.send(new CPacketPlayerPosLook({ x: 0, y: 70, z: 0, yaw: 0, pitch: 0 }));
+		cl.send(new CPacketPlayerPosLook({ x: 0, y: 65, z: 0, yaw: 0, pitch: 0 }));
 	}
 
 	private spawnPacket(p: Player, socketId: string): CPacketSpawnPlayer {
@@ -268,8 +285,8 @@ export default class GameServer {
 			}),
 			operator: p.permissionLevel >= 200,
 			rank: p.rank,
-			yaw: 0,
-			pitch: 0,
+			yaw: p.rotation.yaw,
+			pitch: p.rotation.pitch,
 			cosmetics: new PBCosmetics({
 				skin: "bob",
 				cape: "none",
@@ -288,6 +305,23 @@ export default class GameServer {
 		const p = payload as Record<string, unknown> | undefined;
 		const time = p?.time ? BigInt(p.time as number) : 0n;
 		cl.send(new CPacketPong({ time, mspt: 50, tick: 0 }));
+	}
+
+	private replicatePlayerPos(
+		of: Player,
+		state: {
+			onGround: boolean;
+			yaw: number;
+			pitch: number;
+			pos: Vector3;
+			vel: Vector3;
+		},
+	) {
+		for (const [existingSid, existing] of this.players) {
+			if (existingSid === of.client.id) continue;
+			// TODO: proper replication
+			// it should send a relative entity movement packet
+		}
 	}
 
 	private handleInput(cl: Client, payload: SPacketPlayerInput): void {
@@ -311,21 +345,45 @@ export default class GameServer {
 		if (!checkData.hadPos && checkData.inputOrderExempt <= 0) {
 			console.warn(`[Server] Missing pos look before input packet for player ${player.name}. (Bypassing kick)`);
 		}
+		player.checkData.lastClientPos = new Vector3(
+			payload.pos.x,
+			payload.pos.y,
+			payload.pos.z,
+		);
+		const yaw = payload.yaw ?? player.rotation.yaw;
+		const pitch = payload.pitch ?? player.rotation.pitch;
 		checkData.hadPos = false;
 		const pl = payload;
 		if (!pl.pos) return;
+		player.rotation.yaw = yaw;
+		player.rotation.pitch = pitch;
 		if (player.physics.abilities.isFlying) {
 			cl.send(
 				new CPacketPlayerReconciliation({
 					lastProcessedInput: payload.sequenceNumber,
-					pitch: payload.pitch,
-					yaw: payload.yaw,
+					pitch,
+					yaw,
 					reset: false,
 					x: pl.pos.x,
 					y: pl.pos.y,
 					z: pl.pos.z,
 				}),
 			);
+
+			const pos = new Vector3(payload.pos.x, payload.pos.y, payload.pos.z);
+			player.physics.pos.copy(pos);
+			player.physics.boundingBox = new Box3(
+				new Vector3(pos.x - 0.3, pos.y, pos.z - 0.3),
+				new Vector3(pos.x + 0.3, pos.y + 1.8, pos.z + 0.3),
+			);
+
+			this.replicatePlayerPos(player, {
+				onGround: false,
+				pitch,
+				pos,
+				vel: new Vector3(),
+				yaw,
+			});
 			return;
 		}
 
@@ -345,7 +403,11 @@ export default class GameServer {
 			}
 			checkData.teleportTarget = null;
 		} else if (checkData.predictedNextPos) {
-			const clientPos = new Vector3(pl.pos.x!, pl.pos.y!, pl.pos.z!);
+			const clientPos = new Vector3(
+				payload.pos.x,
+				payload.pos.y,
+				payload.pos.z,
+			);
 			const ep = checkData.predictedNextPos;
 			const dist = clientPos.distanceTo(ep);
 			/*
@@ -397,16 +459,29 @@ export default class GameServer {
 			// if you get setback, your sequence number gets set to 0.
 			checkData.lastSequenceNumber = -1;
 		}
+		const pos = new Vector3(
+			nextPos?.x ?? checkData.lastAuthoritativePos.x,
+			nextPos?.y ?? checkData.lastAuthoritativePos.y,
+			nextPos?.z ?? checkData.lastAuthoritativePos.z,
+		);
+
+		this.replicatePlayerPos(player, {
+			onGround: false,
+			pitch,
+			yaw,
+			pos,
+			vel: new Vector3(),
+		});
 
 		cl.send(
 			new CPacketPlayerReconciliation({
-				lastProcessedInput: pl.sequenceNumber,
-				pitch: pl.pitch,
-				yaw: pl.yaw,
+				lastProcessedInput: payload.sequenceNumber,
+				pitch,
+				yaw,
 				reset,
-				x: nextPos?.x ?? checkData.lastAuthoritativePos.x,
-				y: nextPos?.y ?? checkData.lastAuthoritativePos.y,
-				z: nextPos?.z ?? checkData.lastAuthoritativePos.z,
+				x: pos.x,
+				y: pos.y,
+				z: pos.z,
 			}),
 		);
 
@@ -440,6 +515,10 @@ export default class GameServer {
 		const player = [...this.players.values()].find((p) => p.client === cl);
 		if (!player) return;
 		const { checkData } = player;
+		player.rotation.set(
+			payload.yaw ?? player.rotation.yaw,
+			payload.pitch ?? player.rotation.pitch,
+		);
 		if (checkData.inputOrderExempt > 0) {
 			checkData.inputOrderExempt--;
 		}
@@ -448,15 +527,20 @@ export default class GameServer {
 		}
 		checkData.hadPos = true;
 		checkData.hadInput = false;
+		if (payload.pos)
+			player.checkData.lastClientPos = new Vector3(
+				payload.pos.x,
+				payload.pos.y,
+				payload.pos.z,
+			);
 	}
 
-	private handlePlace(socket: Socket, payload: unknown): void {
+	private handlePlace(socket: Socket, payload: SPacketPlaceBlock): void {
 		const player = this.getPlayer(socket);
 		if (!player) return;
-		const pkt = payload as SPacketPlaceBlock;
-		const posIn = pkt.positionIn;
+		const posIn = payload.positionIn;
 		if (!posIn) return;
-		const side = pkt.side;
+		const side = payload.side;
 		const NUM_OFFSET: [number, number, number][] = [
 			[0, -1, 0], // client DOWN  (index 0)
 			[0, 1, 0], // client UP    (index 1)
@@ -479,19 +563,16 @@ export default class GameServer {
 			new Vector3(bx + 1, by + 1, bz + 1)
 		);
 		let intersects = false;
+    const bb = p.physics.boundingBox;
 		for (const p of this.players.values()) {
-			if (blockBox.intersectsBox(p.physics.boundingBox)) {
+			if (blockBox.intersectsBox(bb)) {
 				intersects = true;
 				break;
 			}
 		}
 
 		if (intersects) {
-			console.log(`[Server] Reverted block placement at ${bx}, ${by}, ${bz} due to player intersection`);
-			const currentBlockId = (player.physics.world as World).getBlockId(bx, by, bz);
-			const revertUpdate = new CPacketBlockUpdate({ id: currentBlockId, x: bx, y: by, z: bz });
-			for (const p of this.players.values()) p.client.send(revertUpdate);
-			return;
+      return cancel("block intersecting with a player");
 		}
 
 		// Get block ID from selected hotbar slot item
@@ -504,7 +585,7 @@ export default class GameServer {
 		for (const p of this.players.values()) p.client.send(update);
 	}
 
-	private handleBreak(socket: Socket, payload: unknown): void {
+	private handleBreak(socket: Socket, payload: SPacketBreakBlock): void {
 		const player = this.getPlayer(socket);
 		const pkt = payload as {
 			location?: { x?: number; y?: number; z?: number };
