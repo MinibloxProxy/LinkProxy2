@@ -27,7 +27,18 @@ import {
 	SPacketPlayerPosLook,
 	type SPacketMessage,
 	type SPacketPlayerInput,
+	SPacketUseEntity,
+	SPacketRespawn,
+	SPacketUpdateInventory,
+	SPacketClickWindow,
+	CPacketUpdateHealth,
+	CPacketEntityVelocity,
+	CPacketEntityStatus,
+	CPacketAnimation,
+	CPacketSoundEffect,
+	CPacketRespawn,
 } from "../gen/protocol2_pb.js";
+import { SPacketUseEntity_Action } from "../gen/common_pb.js";
 import Client from "./client.js";
 import Player from "./player.js";
 import { World } from "./movement/world.js";
@@ -82,6 +93,10 @@ export default class GameServer {
 		const name = ID_TO_NAME[id] as keyof typeof SPACKET_MAP | undefined;
 		if (!name) return;
 
+		if (name !== "SPacketPlayerInput" && name !== "SPacketPlayerPosLook" && name !== "SPacketPing") {
+			console.log(`[Server] Packet received: ${name}`, JSON.stringify(payload));
+		}
+
 		switch (name) {
 			case "SPacketLoginStart":
 				return this.handleLogin(cl, socket, payload);
@@ -128,6 +143,14 @@ export default class GameServer {
 				return this.handleHeld(socket, payload);
 			case "SPacketMessage":
 				return this.handleMessage(socket, payload);
+			case "SPacketUseEntity":
+				return this.handleUseEntity(socket, payload);
+			case "SPacketRespawn":
+				return this.handleRespawn(socket);
+			case "SPacketUpdateInventory":
+				return this.handleUpdateInventory(socket, payload);
+			case "SPacketClickWindow":
+				return this.handleClickWindow(socket, payload);
 		}
 
 		const ignored = new Set([
@@ -291,6 +314,20 @@ export default class GameServer {
 		checkData.hadPos = false;
 		const pl = payload;
 		if (!pl.pos) return;
+		if (player.physics.abilities.isFlying) {
+			cl.send(
+				new CPacketPlayerReconciliation({
+					lastProcessedInput: payload.sequenceNumber,
+					pitch: payload.pitch,
+					yaw: payload.yaw,
+					reset: false,
+					x: pl.pos.x,
+					y: pl.pos.y,
+					z: pl.pos.z,
+				}),
+			);
+			return;
+		}
 
 		let reset = false;
 
@@ -457,7 +494,11 @@ export default class GameServer {
 			return;
 		}
 
-		const blockId = 1;
+		// Get block ID from selected hotbar slot item
+		const heldItem = player.inventory.items[player.heldSlot];
+		console.log(`[Server] handlePlace: heldSlot=${player.heldSlot}, heldItem=${JSON.stringify(heldItem)}, totalItems=${player.inventory.items.length}`);
+		const blockId = (heldItem && heldItem.present && heldItem.id !== undefined) ? heldItem.id : 1;
+
 		player.physics.world.setBlock(bx, by, bz, blockId);
 		const update = new CPacketBlockUpdate({ id: blockId, x: bx, y: by, z: bz });
 		for (const p of this.players.values()) p.client.send(update);
@@ -483,6 +524,31 @@ export default class GameServer {
 		const player = this.getPlayer(socket);
 		if (!player) return;
 		player.heldSlot = payload.slot ?? 0;
+	}
+
+	private handleUpdateInventory(socket: Socket, payload: unknown): void {
+		const player = this.getPlayer(socket);
+		if (!player) return;
+		console.log(`[Server] handleUpdateInventory: player=${player.name}, payload=${JSON.stringify(payload)}`);
+		const pkt = payload as SPacketUpdateInventory;
+		if (pkt.main) {
+			player.inventory.items = pkt.main;
+		}
+	}
+
+	private handleClickWindow(socket: Socket, payload: unknown): void {
+		const player = this.getPlayer(socket);
+		if (!player) return;
+		console.log(`[Server] handleClickWindow: player=${player.name}, payload=${JSON.stringify(payload)}`);
+		const pkt = payload as SPacketClickWindow;
+		const slotId = pkt.slotId;
+		if (pkt.windowId === 0 && slotId !== undefined && slotId >= 4 && slotId < 40) {
+			const invSlot = slotId - 4;
+			if (pkt.itemStack) {
+				player.inventory.items[invSlot] = pkt.itemStack;
+				console.log(`[Server] handleClickWindow: updated slot ${invSlot} to item=${JSON.stringify(pkt.itemStack)}`);
+			}
+		}
 	}
 
 	private handleDisconnect(socket: Socket): void {
@@ -623,6 +689,228 @@ export default class GameServer {
 		const msg = new CPacketMessage({ text: `<${player.name}> ${text}` });
 		for (const p of this.players.values()) {
 			p.client.send(msg);
+		}
+	}
+
+	private handleUseEntity(socket: Socket, payload: unknown): void {
+		const attacker = this.getPlayer(socket);
+		if (!attacker) return;
+
+		const pkt = payload as SPacketUseEntity;
+		console.log(`[Server] handleUseEntity called by ${attacker.name}: action=${pkt.action}, targetId=${pkt.id}`);
+
+		const action = pkt.action as unknown;
+		if (action !== SPacketUseEntity_Action.ATTACK && action !== "ATTACK") {
+			console.log(`[Server] handleUseEntity: Ignored because action is not ATTACK (action: ${pkt.action})`);
+			return;
+		}
+		if (pkt.id === undefined) {
+			console.log(`[Server] handleUseEntity: Ignored because target ID is undefined`);
+			return;
+		}
+
+		// Find the target player
+		const target = [...this.players.values()].find((p) => p.entityId === pkt.id);
+		if (!target) return;
+
+		// 1. Distance check (max 4.5 blocks range)
+		const dist = attacker.physics.pos.distanceTo(target.physics.pos);
+		if (dist > 4.5) {
+			console.log(`[Server] Combat: Attack rejected from ${attacker.name} to ${target.name} due to distance (${dist.toFixed(2)} blocks)`);
+			return;
+		}
+
+		// 2. Creative mode check
+		if (target.gamemode === "creative") {
+			return;
+		}
+
+		// 3. Determine if critical hit (falling, not on ground, not flying)
+		const isCrit = !attacker.physics.onGround && attacker.physics.motion.y < 0 && !attacker.physics.abilities.isFlying;
+
+		// 4. Calculate damage
+		let damage = 2; // 1 heart
+		if (isCrit) {
+			damage = 3; // 1.5 hearts
+		}
+
+		// Apply damage
+		target.health = Math.max(0, target.health - damage);
+		target.physics.health = target.health;
+
+		console.log(`[Server] Combat: ${attacker.name} attacked ${target.name} for ${damage} HP (Crit: ${isCrit}). Target Health: ${target.health}/20`);
+
+		// Sync health to the target client
+		target.client.send(
+			new CPacketUpdateHealth({
+				id: target.entityId,
+				hp: target.health,
+				food: 20,
+				foodSaturation: 5,
+				oxygen: 20,
+			})
+		);
+
+		// Broadcast hurt state to everyone if player survived (hurt status 2 + hurt animation type 1)
+		if (target.health > 0) {
+			const hurtStatus = new CPacketEntityStatus({
+				entityId: target.entityId,
+				entityStatus: 2,
+			});
+			const hurtAnim = new CPacketAnimation({
+				id: target.entityId,
+				type: 1,
+			});
+
+			for (const p of this.players.values()) {
+				p.client.send(hurtStatus);
+				p.client.send(hurtAnim);
+			}
+		}
+
+		// If critical, broadcast critical hit particles (type 4)
+		if (isCrit) {
+			const critAnim = new CPacketAnimation({
+				id: target.entityId,
+				type: 4,
+			});
+			for (const p of this.players.values()) {
+				p.client.send(critAnim);
+			}
+		}
+
+		// 5. Apply knockback velocity
+		const kbDir = new Vector3().subVectors(target.physics.pos, attacker.physics.pos);
+		kbDir.y = 0;
+		if (kbDir.lengthSq() > 0) {
+			kbDir.normalize();
+		} else {
+			kbDir.set(1, 0, 0); // fallback direction
+		}
+
+		let kbHorizontal = 0.45;
+		let kbVertical = 0.35;
+
+		if (attacker.checkData.prevSprinting) {
+			kbHorizontal *= 1.5;
+			kbVertical *= 1.1;
+		}
+
+		const knockbackVelocity = new Vector3(
+			kbDir.x * kbHorizontal,
+			kbVertical,
+			kbDir.z * kbHorizontal
+		);
+
+		// Apply velocity to server-side physics
+		target.physics.motion.copy(knockbackVelocity);
+
+		// Exempt from position prediction checkpoints on next packet
+		target.checkData.predictedNextPos = null;
+		target.checkData.inputOrderExempt = 5;
+
+		// Replicate velocity to the target client
+		target.client.send(
+			new CPacketEntityVelocity({
+				id: target.entityId,
+				motion: new PBFloatVector3({
+					x: knockbackVelocity.x,
+					y: knockbackVelocity.y,
+					z: knockbackVelocity.z,
+				}),
+			})
+		);
+
+		// 6. Death Handling
+		if (target.health <= 0) {
+			console.log(`[Server] Death: ${target.name} was slain by ${attacker.name}`);
+
+			// Broadcast death message
+			const deathMsg = new CPacketMessage({
+				text: `\\red\\${target.name} was slain by ${attacker.name}\\reset\\`,
+			});
+			for (const p of this.players.values()) {
+				p.client.send(deathMsg);
+			}
+
+			// Play the death sound directly for the target player
+			// (we do not send them the death status 3, to prevent their local entity 'dead' flag from getting stuck as true)
+			target.client.send(
+				new CPacketSoundEffect({
+					sound: "game.neutral.die",
+					volume: 1.0,
+					pitch: (Math.random() - Math.random()) * 0.2 + 1.0,
+				})
+			);
+
+			// Broadcast death state (status 3 = dead) to all other players
+			const deathStatus = new CPacketEntityStatus({
+				entityId: target.entityId,
+				entityStatus: 3,
+			});
+			for (const p of this.players.values()) {
+				if (p !== target) {
+					p.client.send(deathStatus);
+				}
+			}
+		}
+	}
+
+	private handleRespawn(socket: Socket): void {
+		const player = this.getPlayer(socket);
+		if (!player) return;
+
+		console.log(`[Server] Respawning player ${player.name}`);
+
+		// Reset player health properties
+		player.health = 20;
+		player.physics.health = 20;
+
+		// Reset coordinates to spawn point
+		player.physics.pos.set(0, 70, 0);
+		player.checkData.lastAuthoritativePos.set(0, 70, 0);
+		this.resetSequenceAndPosition(player);
+		player.checkData.teleportTarget = player.physics.pos.clone();
+
+		// Send respawn confirmation to close the death screen
+		player.client.send(
+			new CPacketRespawn({
+				notDeath: true,
+				client: false,
+				dimension: 0,
+			})
+		);
+
+		// Position player at spawn and sync health
+		player.client.send(
+			new CPacketPlayerPosLook({
+				x: 0,
+				y: 70,
+				z: 0,
+				yaw: 0,
+				pitch: 0,
+			})
+		);
+
+		player.client.send(
+			new CPacketUpdateHealth({
+				id: player.entityId,
+				hp: player.health,
+				food: 20,
+				foodSaturation: 5,
+				oxygen: 20,
+			})
+		);
+
+		// Broadcast destroy & spawn sequence to all other clients to refresh player mesh cleanly
+		const destroyPkt = new CPacketDestroyEntities({ ids: [player.entityId] });
+		const spawnPkt = this.spawnPacket(player, this.getSid(player.client.socket));
+
+		for (const p of this.players.values()) {
+			if (p !== player) {
+				p.client.send(destroyPkt);
+				p.client.send(spawnPkt);
+			}
 		}
 	}
 
