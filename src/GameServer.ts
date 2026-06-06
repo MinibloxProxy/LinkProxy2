@@ -46,6 +46,13 @@ import { createFlatChunk } from "./terrain.js";
 import { simulate } from "./movement/index.js";
 import { PhysicsPlayer } from "./movement/move.js";
 import Rotation from "./rotation.js";
+import {
+	DirectionString,
+	fromProto,
+	fromProtoString,
+	opposite,
+	playerBlockRayTrace,
+} from "./movement/raytrace.js";
 
 const FACE_OFFSET: Record<string, [number, number, number]> = {
 	DOWN: [0, 1, 0],
@@ -549,7 +556,6 @@ export default class GameServer {
 		}
 		if (!side) return;
 		// #region Validations
-		/*
 		const trace = playerBlockRayTrace(
 			{
 				getEyePos() {
@@ -557,10 +563,10 @@ export default class GameServer {
 					return lcp.setY(lcp.y + player.physics.eyeHeight);
 				},
 				getLook() {
-					const pitch = Math.cos(player.rotation.pitch),
-						x = -Math.sin(player.rotation.yaw) * pitch,
+					const cosPitch = Math.cos(player.rotation.pitch),
+						x = -Math.sin(player.rotation.yaw) * cosPitch,
 						y = Math.sin(player.rotation.pitch),
-						z = -Math.cos(player.rotation.yaw) * pitch;
+						z = -Math.cos(player.rotation.yaw) * cosPitch;
 					return new Vector3(x, y, z).normalize();
 				},
 			},
@@ -568,29 +574,27 @@ export default class GameServer {
 			4.5,
 		);
 		if (trace === null) return cancel("trace === null");
-		if (side === null) return cancel("side === null");
 		const realSide =
 			opposite[fromProtoString(side as unknown as DirectionString)];
-		if (trace.block) {
-			console.log("hitVec = ", trace.hitVec.toArray(), [
-				payload.hitX,
-				payload.hitY,
-				payload.hitZ,
-			]);
-		}
+		if (realSide === undefined) return cancel("undefined side");
 		if (
 			trace.block?.x !== posIn.x ||
 			trace.block?.y !== posIn.y ||
 			trace.block?.z !== posIn.z
 		)
-			return cancel("traced block pos and normal block pos don't match");
+			return cancel("traced block pos doesn't match");
 		if (trace.side !== realSide) return cancel("traced side !== client side");
-		/*if (
-			trace.hitVec.x !== payload.hitX ||
-			trace.hitVec.y !== payload.hitY ||
-			trace.hitVec.z !== payload.hitZ
+
+		const EPS = 0.2;
+		if (
+			payload.hitX !== undefined &&
+			payload.hitY !== undefined &&
+			payload.hitZ !== undefined &&
+			(Math.abs(trace.hitVec.x - (posIn.x ?? 0) - payload.hitX) > EPS ||
+				Math.abs(trace.hitVec.y - (posIn.y ?? 0) - payload.hitY) > EPS ||
+				Math.abs(trace.hitVec.z - (posIn.z ?? 0) - payload.hitZ) > EPS)
 		)
-			return cancel("wrong hit vec");*/
+			return cancel("wrong hit vec");
 		// #endregion
 
 		const blockBox = new Box3(

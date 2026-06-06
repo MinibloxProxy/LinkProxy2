@@ -163,7 +163,7 @@ export class PhysicsPlayer {
 	get eyeHeight() {
 		let eyeHeight = 1.62;
 		if (this.isPlayerSleeping()) eyeHeight = 0.2;
-		if (this.sneak) eyeHeight -= 0.8;
+		if (this.sneak) eyeHeight -= 0.08;
 		return eyeHeight;
 	}
 
