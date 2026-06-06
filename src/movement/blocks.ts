@@ -15,6 +15,10 @@ export class BlockLiquid extends Block {
 		}
 		return (n + 1) / 9;
 	}
+
+	override canCollideCheck(_state: { block: Block }, stopOnLiquid: boolean): boolean {
+		return stopOnLiquid;
+	}
 }
 
 export class BlockLiquidLava extends BlockLiquid {

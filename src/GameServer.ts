@@ -21,6 +21,7 @@ import {
 	SPacketBreakBlock,
 	SPacketEntityAction,
 	SPacketHeldItemChange,
+	SPacketLoginStart,
 	SPacketPlaceBlock,
 	SPacketPlayerAbilities,
 	SPacketPlayerPosLook,
@@ -32,6 +33,16 @@ import { ID_TO_NAME, type SPACKET_MAP } from "./protocol/index.js";
 import { createFlatChunk } from "./terrain.js";
 import { simulate } from "./movement/index.js";
 import { PhysicsPlayer } from "./movement/move.js";
+import Rotation from "./rotation.js";
+import {
+	DirectionString,
+	EnumFacing,
+	fromProto,
+	fromProtoString,
+	opposite,
+	playerBlockRayTrace,
+} from "./movement/raytrace.js";
+import { World } from "./movement/world.js";
 
 const FACE_OFFSET: Record<string, [number, number, number]> = {
 	DOWN: [0, 1, 0],
@@ -44,6 +55,8 @@ const FACE_OFFSET: Record<string, [number, number, number]> = {
 
 export default class GameServer {
 	private players = new Map<string, Player>();
+	// note: Miniblox has 2 dimensions (overworld and nether), I'm ignoring the nether since... Why? Whatever.
+	private world = new World();
 	private nextEntityId = 0;
 
 	addClient(socket: Socket): void {
@@ -81,7 +94,7 @@ export default class GameServer {
 
 		switch (name) {
 			case "SPacketLoginStart":
-				return this.handleLogin(cl, socket, payload);
+				return this.handleLogin(cl, payload);
 			case "SPacketRequestChunk":
 				return this.handleChunk(cl, payload);
 			case "SPacketPing":
@@ -106,7 +119,7 @@ export default class GameServer {
 				const pl = payload as SPacketPlayerAbilities;
 				if (pl.isFlying !== undefined)
 					player.physics.abilities.isFlying = pl.isFlying;
-				break;
+				return;
 			}
 			case "SPacketClick":
 				break; // TODO
@@ -147,21 +160,23 @@ export default class GameServer {
 			(d as Record<string, unknown>).t === 0 &&
 			(d as Record<string, unknown>).d === null
 		) {
-			cl.send({ sid: this.getSid(socket), pid: null }, { packetType: 0 });
+			cl.send({ sid: cl.id, pid: null }, { packetType: 0 });
 			return true;
 		}
 		return false;
 	}
 
-	private handleLogin(cl: Client, socket: Socket, _payload: unknown): void {
+	private handleLogin(cl: Client, _payload: SPacketLoginStart): void {
 		const eid = this.nextEntityId++;
 		const player = new Player(
 			cl,
 			`Player${eid}`,
 			"creative",
-			new Vector3(0, 70, 0),
+			new Vector3(0, 66, 0),
+			new Rotation(),
+			this.world,
 		);
-		this.players.set(this.getSid(socket), player);
+		this.players.set(player.socketId, player);
 
 		console.log(`[Server] ${player.name} joined (eid=${player.entityId})`);
 
@@ -227,7 +242,7 @@ export default class GameServer {
 
 		this.broadcastPlayerList();
 
-		cl.send(new CPacketPlayerPosLook({ x: 0, y: 70, z: 0, yaw: 0, pitch: 0 }));
+		cl.send(new CPacketPlayerPosLook({ x: 0, y: 65, z: 0, yaw: 0, pitch: 0 }));
 	}
 
 	private spawnPacket(p: Player, socketId: string): CPacketSpawnPlayer {
@@ -242,8 +257,8 @@ export default class GameServer {
 			}),
 			operator: p.permissionLevel >= 200,
 			rank: p.rank,
-			yaw: p.physics.yaw,
-			pitch: 0,
+			yaw: p.rotation.yaw,
+			pitch: p.rotation.pitch,
 			cosmetics: new PBCosmetics({
 				skin: "bob",
 				cape: "none",
@@ -277,7 +292,7 @@ export default class GameServer {
 		for (const [existingSid, existing] of this.players) {
 			if (existingSid === of.client.id) continue;
 			// TODO: proper replication
-			// it should send a relative entity movement packet 
+			// it should send a relative entity movement packet
 		}
 	}
 
@@ -307,27 +322,44 @@ export default class GameServer {
 			cl.disconnect("Missing position in SPacketPlayerInput");
 			return;
 		}
+		player.checkData.lastClientPos = new Vector3(
+			payload.pos.x,
+			payload.pos.y,
+			payload.pos.z,
+		);
+		const yaw = payload.yaw ?? player.rotation.yaw;
+		const pitch = payload.pitch ?? player.rotation.pitch;
 		checkData.hadPos = false;
+		player.rotation.yaw = yaw;
+		player.rotation.pitch = pitch;
 		if (player.physics.abilities.isFlying) {
 			// just accept it.
 			// TODO: simulate even while flying. it'd require a bit more code, and its flying so who cares anyway. this isn't like mc where making fly speed faster is a common thing in "legit" / "pvp" clients.
 			cl.send(
 				new CPacketPlayerReconciliation({
 					lastProcessedInput: payload.sequenceNumber,
-					pitch: payload.pitch,
-					yaw: payload.yaw,
+					pitch,
+					yaw,
 					reset: false,
 					x: payload.pos.x,
 					y: payload.pos.y,
 					z: payload.pos.z,
 				}),
 			);
+
+			const pos = new Vector3(payload.pos.x, payload.pos.y, payload.pos.z);
+			player.physics.pos.copy(pos);
+			player.physics.boundingBox = new Box3(
+				new Vector3(pos.x - 0.3, pos.y, pos.z - 0.3),
+				new Vector3(pos.x + 0.3, pos.y + 1.8, pos.z + 0.3),
+			);
+
 			this.replicatePlayerPos(player, {
 				onGround: false,
-				pitch: payload.pitch!,
-				pos: new Vector3(payload.pos.x, payload.pos.y, payload.pos.z),
+				pitch,
+				pos,
 				vel: new Vector3(),
-				yaw: payload.yaw!,
+				yaw,
 			});
 			return;
 		}
@@ -405,8 +437,8 @@ export default class GameServer {
 
 		this.replicatePlayerPos(player, {
 			onGround: false,
-			pitch: payload.pitch!,
-			yaw: payload.yaw!,
+			pitch,
+			yaw,
 			pos,
 			vel: new Vector3(),
 		});
@@ -414,8 +446,8 @@ export default class GameServer {
 		cl.send(
 			new CPacketPlayerReconciliation({
 				lastProcessedInput: payload.sequenceNumber,
-				pitch: payload.pitch,
-				yaw: payload.yaw,
+				pitch,
+				yaw,
 				reset,
 				x: pos.x,
 				y: pos.y,
@@ -428,6 +460,10 @@ export default class GameServer {
 		const player = [...this.players.values()].find((p) => p.client === cl);
 		if (!player) return;
 		const { checkData } = player;
+		player.rotation.set(
+			payload.yaw ?? player.rotation.yaw,
+			payload.pitch ?? player.rotation.pitch,
+		);
 		if (checkData.inputOrderExempt > 0) {
 			checkData.inputOrderExempt--;
 		}
@@ -437,15 +473,20 @@ export default class GameServer {
 		}
 		checkData.hadPos = true;
 		checkData.hadInput = false;
+		if (payload.pos)
+			player.checkData.lastClientPos = new Vector3(
+				payload.pos.x,
+				payload.pos.y,
+				payload.pos.z,
+			);
 	}
 
-	private handlePlace(socket: Socket, payload: unknown): void {
+	private handlePlace(socket: Socket, payload: SPacketPlaceBlock): void {
 		const player = this.getPlayer(socket);
 		if (!player) return;
-		const pkt = payload as SPacketPlaceBlock;
-		const posIn = pkt.positionIn;
+		const posIn = payload.positionIn;
 		if (!posIn) return;
-		const side = pkt.side;
+		const side = payload.side;
 		const NUM_OFFSET: [number, number, number][] = [
 			[0, -1, 0], // client DOWN  (index 0)
 			[0, 1, 0], // client UP    (index 1)
@@ -461,6 +502,75 @@ export default class GameServer {
 		const bx = (posIn.x ?? 0) + off[0];
 		const by = (posIn.y ?? 0) + off[1];
 		const bz = (posIn.z ?? 0) + off[2];
+		function cancel(reason?: string) {
+			if (player === undefined) return;
+			player.client.send(
+				new CPacketMessage({
+					text: `Cancel block placement: ${reason}`,
+				}),
+			);
+			const air = new CPacketBlockUpdate({ id: 0, x: bx, y: by, z: bz });
+			player.client.send(air);
+		}
+		if (!side) return;
+		// #region Validations
+		/*
+		const trace = playerBlockRayTrace(
+			{
+				getEyePos() {
+					const lcp = player.checkData.lastClientPos.clone();
+					return lcp.setY(lcp.y + player.physics.eyeHeight);
+				},
+				getLook() {
+					const pitch = Math.cos(player.rotation.pitch),
+						x = -Math.sin(player.rotation.yaw) * pitch,
+						y = Math.sin(player.rotation.pitch),
+						z = -Math.cos(player.rotation.yaw) * pitch;
+					return new Vector3(x, y, z).normalize();
+				},
+			},
+			this.world,
+			4.5,
+		);
+		if (trace === null) return cancel("trace === null");
+		if (side === null) return cancel("side === null");
+		const realSide =
+			opposite[fromProtoString(side as unknown as DirectionString)];
+		if (trace.block) {
+			console.log("hitVec = ", trace.hitVec.toArray(), [
+				payload.hitX,
+				payload.hitY,
+				payload.hitZ,
+			]);
+		}
+		if (
+			trace.block?.x !== posIn.x ||
+			trace.block?.y !== posIn.y ||
+			trace.block?.z !== posIn.z
+		)
+			return cancel("traced block pos and normal block pos don't match");
+		if (trace.side !== realSide) return cancel("traced side !== client side");
+		/*if (
+			trace.hitVec.x !== payload.hitX ||
+			trace.hitVec.y !== payload.hitY ||
+			trace.hitVec.z !== payload.hitZ
+		)
+			return cancel("wrong hit vec");*/
+		// #endregion
+		const bb = player.physics.boundingBox;
+		if (
+			bb.max.x > bx &&
+			bb.min.x < bx + 1 &&
+			bb.max.y > by &&
+			bb.min.y < by + 1 &&
+			bb.max.z > bz &&
+			bb.min.z < bz + 1
+		) {
+			// Undo the client's prediction by sending the current (air) block
+			const air = new CPacketBlockUpdate({ id: 0, x: bx, y: by, z: bz });
+			player.client.send(air);
+			return;
+		}
 		const blockId = 1;
 		player.physics.world.setBlock(bx, by, bz, blockId);
 		const update = new CPacketBlockUpdate({ id: blockId, x: bx, y: by, z: bz });
