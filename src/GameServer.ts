@@ -47,6 +47,7 @@ import { simulate } from "./movement/index.js";
 import { PhysicsPlayer } from "./movement/move.js";
 import Rotation from "./rotation.js";
 import { EnumFacing, playerBlockRayTrace } from "./movement/raytrace.js";
+import BlockPos from "./movement/BlockPos.js";
 
 export default class GameServer {
 	private players = new Map<string, Player>();
@@ -355,8 +356,7 @@ export default class GameServer {
 		checkData.hadPos = false;
 		const pl = payload;
 		if (!pl.pos) return;
-		player.rotation.yaw = yaw;
-		player.rotation.pitch = pitch;
+		player.setRotation(yaw, pitch);
 
 		let reset = false;
 
@@ -460,7 +460,7 @@ export default class GameServer {
 		const player = [...this.players.values()].find((p) => p.client === cl);
 		if (!player) return;
 		const { checkData } = player;
-		player.rotation.set(
+		player.setRotation(
 			payload.yaw ?? player.rotation.yaw,
 			payload.pitch ?? player.rotation.pitch,
 		);
@@ -520,39 +520,56 @@ export default class GameServer {
 		}
 
 		// #region Validations
-		const trace = playerBlockRayTrace(
-			{
-				getEyePos() {
-					const lcp = player.checkData.lastClientPos.clone();
-					return lcp.setY(lcp.y + player.physics.eyeHeight);
+		const possible = [player.rotation, player.lastRotation];
+		function tryValidate(yaw: number, pitch: number): true | string {
+			const trace = playerBlockRayTrace(
+				{
+					getEyePos() {
+						const lcp = player.checkData.lastClientPos.clone();
+						return lcp.setY(lcp.y + player.physics.eyeHeight);
+					},
+					getLook() {
+						const cosPitch = Math.cos(pitch),
+							x = -Math.sin(yaw) * cosPitch,
+							y = Math.sin(pitch),
+							z = -Math.cos(yaw) * cosPitch;
+						return new Vector3(x, y, z).normalize();
+					},
 				},
-				getLook() {
-					const cosPitch = Math.cos(player.rotation.pitch),
-						x = -Math.sin(player.rotation.yaw) * cosPitch,
-						y = Math.sin(player.rotation.pitch),
-						z = -Math.cos(player.rotation.yaw) * cosPitch;
-					return new Vector3(x, y, z).normalize();
-				},
-			},
-			world,
-			4.5,
-		);
-		if (trace === null) return cancel("trace === null");
-		const realSide =
-			typeof side === "string"
-				? (PBEnumFacing as unknown as Record<string, number>)[side]
-				: side;
-		if (realSide === undefined) return cancel("undefined side");
-		if (
-			trace.block?.x !== posIn.x ||
-			trace.block?.y !== posIn.y ||
-			trace.block?.z !== posIn.z
-		)
-			return cancel("traced block pos doesn't match");
-		if (trace.side !== realSide)
-			return cancel(
-				`traced side (${EnumFacing[trace.side]}) !== client side (${EnumFacing[realSide]})`,
+				world,
+				4.5,
 			);
+			if (trace === null) return "trace === null";
+			const realSide =
+				typeof side === "string"
+					? (PBEnumFacing as unknown as Record<string, number>)[side]
+					: side;
+			if (realSide === undefined) return "undefined side";
+			if (!trace.block) return "not hitting a block";
+			if (!posIn) throw "I validate this earlier lol";
+			if (
+				trace.block.x !== posIn.x ||
+				trace.block.y !== posIn.y ||
+				trace.block.z !== posIn.z
+			) {
+				const diff = trace.block.distanceTo(BlockPos.fromProto(posIn));
+				return `traced block pos doesn't match (diff = ${diff})`;
+			}
+			if (trace.side !== realSide)
+				return `traced side (${EnumFacing[trace.side]}) !== client side (${EnumFacing[realSide]})`;
+			return true;
+		}
+		let err: string | undefined = undefined;
+		for (const r of possible) {
+			const result = tryValidate(r.yaw, r.pitch);
+			if (result === true) break;
+			else {
+				err = result;
+			}
+		}
+		if (err) {
+			return cancel(err);
+		}
 		// #endregion
 
 		// Check if the block intersects with any connected player (strict: touching faces is OK)

@@ -15,7 +15,22 @@ export default class Player {
 	health = 20;
 	heldSlot = 0;
 	readonly physics: PhysicsPlayer;
-	readonly rotation = new Rotation();
+	readonly #rotation = new Rotation();
+	readonly lastRotation = this.#rotation;
+	get rotation() {
+		return this.#rotation;
+	}
+	updateLastRotation() {
+		this.lastRotation.copy(this.#rotation);
+	}
+	set rotation(rotation: Rotation) {
+		this.lastRotation.copy(this.#rotation);
+		this.#rotation.copy(rotation);
+	}
+	setRotation(yaw: number, pitch: number) {
+		this.updateLastRotation();
+		this.#rotation.set(yaw, pitch);
+	}
 	checkData = {
 		hadInput: false,
 		hadPos: false,
@@ -55,6 +70,7 @@ export default class Player {
 		public permissionLevel = 0,
 		public readonly inventory = new Inventory(),
 	) {
+		this.lastRotation.copy(rotation);
 		this.socketId = client.id;
 		this.physics = new PhysicsPlayer(world, pos);
 		this.physics.yaw = rotation.yaw;
