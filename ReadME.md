@@ -20,7 +20,6 @@ I (99%) vibekobed the protobuf dumping, so don't expect it to work purrfectly (:
 
 - Bun (for as long as you want to run this)
 - mkcert (during setup, we need to make certificates for localhost)
-- my [dumpers](https://codeberg.org/Miniblox/dumpers), specifically the protobuf dumper.
 
 To install the required tools:
 

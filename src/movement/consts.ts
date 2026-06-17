@@ -1,3 +1,0 @@
-export const CHUNK_WIDTH = 16,
-	CELL_HEIGHT = 16,
-	CELL_WIDTH = CHUNK_WIDTH;

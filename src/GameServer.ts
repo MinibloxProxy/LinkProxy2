@@ -36,18 +36,20 @@ import {
 	CPacketAnimation,
 	CPacketSoundEffect,
 	CPacketRespawn,
-} from "../gen/protocol2_pb.js";
-import { PBEnumFacing, SPacketUseEntity_Action } from "../gen/common_pb.js";
+} from "@miniblox/protocol";
+import { PBEnumFacing, SPacketUseEntity_Action } from "@miniblox/protocol";
 import Client from "./client.js";
 import Player from "./player.js";
-import { World } from "./movement/world.js";
-import { ID_TO_NAME, type SPACKET_MAP } from "./protocol/index.js";
+import { World } from "./world.js";
+import { ID_TO_NAME, type SPACKET_MAP } from "@miniblox/protocol";
 import { createFlatChunk } from "./terrain.js";
-import { simulate } from "./movement/index.js";
-import { PhysicsPlayer } from "./movement/move.js";
+import {
+	simulate,
+	playerBlockRayTrace,
+	PhysicsPlayer,
+} from "@miniblox/physics";
 import Rotation from "./rotation.js";
-import { EnumFacing, playerBlockRayTrace } from "./movement/raytrace.js";
-import BlockPos from "./movement/BlockPos.js";
+import toProto from "./utils/modifierToProto.js";
 
 export default class GameServer {
 	private players = new Map<string, Player>();
@@ -204,7 +206,7 @@ export default class GameServer {
 				serverInfo: {
 					serverId: "local-1-1",
 					serverName: "Local Server",
-					serverVersion: "3.41.74",
+					serverVersion: "3.44.10",
 					serverCategory: "planets",
 					accessControl: "public",
 					worldType: "VOID",
@@ -420,7 +422,7 @@ export default class GameServer {
 							id: "generic.movementSpeed",
 							value: player.physics.movementSpeedAttribute.getBaseValue(),
 							modifiers: pl.sprint
-								? ([PhysicsPlayer.SPRINT_MODIFIER.toProto()] as const)
+								? ([toProto(PhysicsPlayer.SPRINT_MODIFIER)] as const)
 								: [],
 						}),
 					],
@@ -546,7 +548,11 @@ export default class GameServer {
 		if (realSide === undefined) return cancel("undefined side");
 		const traceOffset = NUM_OFFSET[trace.side] ?? [0, 0, 0];
 		if (
-			!(trace.block?.x === posIn.x && trace.block?.y === posIn.y && trace.block?.z === posIn.z) &&
+			!(
+				trace.block?.x === posIn.x &&
+				trace.block?.y === posIn.y &&
+				trace.block?.z === posIn.z
+			) &&
 			!(
 				posIn.x === (trace.block?.x ?? 0) + traceOffset[0] &&
 				posIn.y === (trace.block?.y ?? 0) + traceOffset[1] &&
@@ -571,9 +577,7 @@ export default class GameServer {
 				bb.max.z > blockBox.min.z &&
 				bb.min.z < blockBox.max.z
 			) {
-				p.client.send(
-					new CPacketBlockUpdate({ id: 0, x: bx, y: by, z: bz }),
-				);
+				p.client.send(new CPacketBlockUpdate({ id: 0, x: bx, y: by, z: bz }));
 				return;
 			}
 		}

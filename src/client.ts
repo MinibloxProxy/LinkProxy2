@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { Message } from "@bufbuild/protobuf";
 import { decode } from "@msgpack/msgpack";
 import type { Socket } from "engine.io";
-import { CPacketDisconnect } from "../gen/protocol2_pb.js";
+import { CPacketDisconnect } from "@miniblox/protocol";
 import { type EncodeOptions, encode } from "./parser/encoder.js";
 
 export interface ClientEvents {

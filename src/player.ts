@@ -4,9 +4,9 @@ import type Client from "./client.js";
 import {
 	CPacketPlayerPosLook,
 	type SPacketPlaceBlock,
-} from "../gen/protocol2_pb.js";
-import { PhysicsPlayer } from "./movement/move.js";
-import { World } from "./movement/world.js";
+} from "@miniblox/protocol";
+import { PhysicsPlayer } from "@miniblox/physics";
+import { World } from "./world.js";
 import Inventory from "./inventory.js";
 import Rotation from "./rotation.js";
 

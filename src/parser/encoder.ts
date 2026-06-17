@@ -1,7 +1,7 @@
 import { brotliCompressSync, constants } from "node:zlib";
 import { Message } from "@bufbuild/protobuf";
 import { encode as msgpackEncode } from "@msgpack/msgpack";
-import { NAME_TO_ID } from "../protocol/index.js";
+import { NAME_TO_ID } from "@miniblox/protocol";
 
 export interface EncodeOptions {
 	/** Enable Brotli compression (only for protobuf messages) */

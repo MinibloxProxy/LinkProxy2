@@ -1,4 +1,4 @@
-import { CPacketChunkData, PBCell } from "../gen/protocol3_pb.js";
+import { CPacketChunkData, PBCell } from "@miniblox/protocol";
 
 // Helper to pack a cell into 4-bit entries
 export function createCell(yBase: number, blockIds: number[]): PBCell {
